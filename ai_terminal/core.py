@@ -929,20 +929,41 @@ Convert the user's request to appropriate terminal commands."""
             return False
 
         print("📋 LLM suggested recovery plan:")
-        for step in fix_steps:
+        for i, step in enumerate(fix_steps, start=1):
             desc = step.description or step.command
-            print(f"  {step.step}. {desc}")
+            print(f"  {i}. {desc}")
 
-        if not self._prompt_confirmation("Execute LLM recovery plan?"):
+        # Allow user to select specific steps or execute all
+        print()
+        choice = input("Execute: [a]ll steps, [1-9] specific step, or [n]one? ").strip().lower()
+        
+        if choice in {"n", "no", "none"}:
             print("❌ Recovery plan rejected by user. Manual intervention required.")
             return False
+        
+        steps_to_execute = []
+        if choice in {"a", "all", "y", "yes"}:
+            steps_to_execute = fix_steps
+        elif choice.isdigit():
+            step_num = int(choice)
+            if 1 <= step_num <= len(fix_steps):
+                steps_to_execute = [fix_steps[step_num - 1]]
+            else:
+                print(f"❌ Invalid step number {step_num}. Must be between 1 and {len(fix_steps)}.")
+                return False
+        else:
+            print("❌ Invalid choice. Recovery plan aborted.")
+            return False
 
-        for idx, step in enumerate(fix_steps, start=1):
-            print(f"🔁 [LLM {idx}/{len(fix_steps)}] {step.command}")
+        recovery_successful = False
+        for idx, step in enumerate(steps_to_execute, start=1):
+            print(f"🔁 [LLM {idx}/{len(steps_to_execute)}] {step.command}")
             result = self.execute_command(step.command, working_dir)
 
             if result.output:
                 print(result.output)
+                # If recovery step produced output, consider it successful
+                recovery_successful = True
             if result.error:
                 print(f"⚠️  {result.error}")
 
@@ -958,17 +979,23 @@ Convert the user's request to appropriate terminal commands."""
                 )
             )
 
-        print("🔁 Retrying original command after LLM fixes...")
-        retry_result = self.execute_command(failed_command, working_dir)
+        # Only retry original command if it makes sense to do so
+        # Don't retry if recovery steps already provided the answer
+        if self._should_retry_original_command(failed_command, steps_to_execute, recovery_successful):
+            print("🔁 Retrying original command after LLM fixes...")
+            retry_result = self.execute_command(failed_command, working_dir)
 
-        if retry_result.output:
-            print(retry_result.output)
-        if retry_result.error:
-            print(f"⚠️  {retry_result.error}")
+            if retry_result.output:
+                print(retry_result.output)
+            if retry_result.error:
+                print(f"⚠️  {retry_result.error}")
 
-        if not retry_result.success:
-            print("❌ Command still failing after LLM recovery. Manual intervention required.")
-            return False
+            if not retry_result.success:
+                print("❌ Command still failing after LLM recovery. Manual intervention required.")
+                return False
+        else:
+            print("✅ Recovery steps completed successfully!")
+            return True
 
         executed_steps.append(
             PlanStep(
@@ -979,6 +1006,35 @@ Convert the user's request to appropriate terminal commands."""
         )
 
         print("✅ Command succeeded after LLM-guided recovery.")
+        return True
+
+    def _should_retry_original_command(self, failed_command: str, recovery_steps: List[PlanStep], recovery_successful: bool) -> bool:
+        """Determine if we should retry the original command after recovery steps."""
+        
+        # If recovery didn't produce any output, we should retry
+        if not recovery_successful:
+            return True
+            
+        failed_cmd_lower = failed_command.lower()
+        
+        # Don't retry if the recovery steps were alternative commands that already provided the answer
+        for step in recovery_steps:
+            step_cmd_lower = step.command.lower()
+            
+            # If recovery step was an alternative version command (python3 vs python), don't retry original
+            if ("--version" in failed_cmd_lower and "--version" in step_cmd_lower) or \
+               ("version" in failed_cmd_lower and "version" in step_cmd_lower):
+                return False
+                
+            # If recovery step was checking availability (which, type), don't retry original
+            if any(cmd in step_cmd_lower for cmd in ["which", "type", "whereis"]):
+                return False
+                
+            # If recovery step was an alternative info command (system_profiler, sysctl), don't retry original
+            if any(cmd in step_cmd_lower for cmd in ["system_profiler", "sysctl", "log show"]):
+                return False
+        
+        # For other cases, it might make sense to retry (e.g., after installing missing packages)
         return True
     
     def _advanced_fallback(self, user_input: str) -> Dict[str, Any]:

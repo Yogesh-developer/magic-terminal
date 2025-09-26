@@ -69,14 +69,25 @@ class LLMClient:
     ) -> List[PlanStep]:
         """Return corrective steps when execution fails."""
 
+        # Always try fallback first to ensure we have something
+        fallback_suggestions = self._fallback_fix(failed_step, error_output)
+        
+        # Try LLM for potentially better suggestions
         prompt = self._build_fix_prompt(failed_step, error_output, executed_steps)
         response_text = self._call_llm(prompt)
         if response_text:
             fixes = self._parse_steps(response_text)
             if fixes:
+                # Return LLM suggestions if they're good
                 return fixes
             self._log_failed_response("fix", response_text)
-        return self._fallback_fix(failed_step, error_output)
+        
+        # If LLM failed or no LLM available, return fallback suggestions
+        # If fallback is empty, provide generic troubleshooting steps
+        if not fallback_suggestions:
+            fallback_suggestions = self._generic_troubleshooting_steps(failed_step, error_output)
+            
+        return fallback_suggestions
 
     # ------------------------------------------------------------------
     # Prompt construction
@@ -253,7 +264,9 @@ class LLMClient:
     def _fallback_fix(self, failed_step: PlanStep, error_output: str) -> List[PlanStep]:
         suggestions: List[PlanStep] = []
         error_lower = error_output.lower()
+        command_lower = failed_step.command.lower()
 
+        # Permission-related fixes
         if "permission" in error_lower and not failed_step.command.startswith("sudo"):
             suggestions.append(
                 PlanStep(
@@ -263,12 +276,259 @@ class LLMClient:
                 )
             )
 
+        # macOS-specific command fixes
+        if self._system_os.lower() == "darwin":
+            # Fix for top command with invalid %MEM argument
+            if "top" in command_lower and "invalid argument" in error_lower and "%mem" in command_lower:
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command="top -o mem -l 1 -n 10",
+                        description="Use 'mem' instead of '%MEM' for macOS top",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command="ps aux | sort -k4 -nr | head -10",
+                        description="Alternative: Use ps with memory sorting",
+                    )
+                )
+
+            # Fix for systemctl (Linux command) on macOS
+            elif "systemctl" in command_lower and "command not found" in error_lower:
+                if "docker" in command_lower:
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step,
+                            command="ps aux | grep -i docker",
+                            description="Check if Docker processes are running",
+                        )
+                    )
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step + 1,
+                            command="open -a Docker",
+                            description="Start Docker Desktop application",
+                        )
+                    )
+                else:
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step,
+                            command="launchctl list | grep -i service",
+                            description="Use launchctl to check services on macOS",
+                        )
+                    )
+
+            # Fix for journalctl (Linux command) on macOS
+            elif "journalctl" in command_lower and "command not found" in error_lower:
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command="log show --last 50 --style compact",
+                        description="Use macOS log command instead of journalctl",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command="tail -50 /var/log/system.log",
+                        description="Alternative: Read system log directly",
+                    )
+                )
+
+            # Fix for sysctl unknown oid
+            elif "sysctl" in command_lower and "unknown oid" in error_lower:
+                if "hw.cpu" in command_lower:
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step,
+                            command="sysctl -n machdep.cpu.brand_string",
+                            description="Get CPU brand information",
+                        )
+                    )
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step + 1,
+                            command="sysctl -n hw.ncpu",
+                            description="Get number of CPU cores",
+                        )
+                    )
+                    suggestions.append(
+                        PlanStep(
+                            step=failed_step.step + 2,
+                            command="system_profiler SPHardwareDataType | grep 'Processor'",
+                            description="Alternative: Use system_profiler for CPU details",
+                        )
+                    )
+
+            # Fix for python command not found
+            elif "python" in command_lower and "command not found" in error_lower:
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command="python3 --version",
+                        description="Try python3 instead of python",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command="which python3",
+                        description="Check if python3 is available",
+                    )
+                )
+
+        # Docker daemon not running (cross-platform)
+        if ("docker daemon" in error_lower and "not running" in error_lower) or \
+           ("cannot connect to the docker daemon" in error_lower):
+            if self._system_os.lower() == "darwin":
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command="open -a Docker",
+                        description="Start Docker Desktop on macOS",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command="sleep 10 && docker version",
+                        description="Wait for Docker to start and verify",
+                    )
+                )
+            else:
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command="sudo systemctl start docker",
+                        description="Start Docker daemon",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command="sudo systemctl status docker",
+                        description="Check Docker daemon status",
+                    )
+                )
+
+        # Linux-specific fixes
         if "not found" in error_lower and "apt" in failed_step.command:
             suggestions.append(
                 PlanStep(
                     step=max(failed_step.step - 1, 1),
                     command="sudo apt update",
                     description="Refresh package list before retry",
+                )
+            )
+
+        # Generic "command not found" fallback for any missed cases
+        if not suggestions and ("command not found" in error_lower or "not found" in error_lower):
+            command_name = command_lower.split()[0] if command_lower.split() else "command"
+            
+            if self._system_os.lower() == "darwin":
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command=f"brew search {command_name}",
+                        description=f"Search for {command_name} in Homebrew",
+                    )
+                )
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step + 1,
+                        command=f"brew install {command_name}",
+                        description=f"Try installing {command_name} with Homebrew",
+                    )
+                )
+            else:
+                suggestions.append(
+                    PlanStep(
+                        step=failed_step.step,
+                        command=f"apt search {command_name}",
+                        description=f"Search for {command_name} in package manager",
+                    )
+                )
+
+        return suggestions
+
+    def _generic_troubleshooting_steps(self, failed_step: PlanStep, error_output: str) -> List[PlanStep]:
+        """Provide generic troubleshooting steps when specific fixes aren't available."""
+        suggestions: List[PlanStep] = []
+        error_lower = error_output.lower()
+        command_lower = failed_step.command.lower()
+
+        # Command not found - suggest alternatives
+        if "command not found" in error_lower or "not found" in error_lower:
+            command_name = command_lower.split()[0] if command_lower.split() else "command"
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step,
+                    command=f"which {command_name}",
+                    description=f"Check if {command_name} is installed and in PATH",
+                )
+            )
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step + 1,
+                    command=f"type {command_name}",
+                    description=f"Alternative check for {command_name} availability",
+                )
+            )
+
+        # Permission denied
+        elif "permission denied" in error_lower:
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step,
+                    command=f"ls -la {command_lower.split()[-1] if command_lower.split() else '.'}",
+                    description="Check file/directory permissions",
+                )
+            )
+
+        # Network/connection issues
+        elif any(keyword in error_lower for keyword in ["connection", "network", "timeout", "unreachable"]):
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step,
+                    command="ping -c 1 8.8.8.8",
+                    description="Test internet connectivity",
+                )
+            )
+
+        # File/directory not found
+        elif "no such file" in error_lower or "directory" in error_lower:
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step,
+                    command="pwd",
+                    description="Check current directory",
+                )
+            )
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step + 1,
+                    command="ls -la",
+                    description="List files in current directory",
+                )
+            )
+
+        # If no specific suggestions, provide general help
+        if not suggestions:
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step,
+                    command=f"man {command_lower.split()[0] if command_lower.split() else 'help'}",
+                    description="Check manual/help for the command",
+                )
+            )
+            suggestions.append(
+                PlanStep(
+                    step=failed_step.step + 1,
+                    command=f"{command_lower.split()[0] if command_lower.split() else 'command'} --help",
+                    description="Try getting help for the command",
                 )
             )
 
