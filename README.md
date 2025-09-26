@@ -24,8 +24,8 @@ A magical terminal assistant that understands natural language and makes command
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ai-terminal.git
-cd ai-terminal
+git clone https://github.com/Yogesh-developer/magic-terminal.git
+cd magic-terminal
 
 # Install dependencies
 pip install -r requirements.txt
@@ -147,48 +147,13 @@ ollama serve
 export XAI_API_KEY="your-grok-api-key"
 ```
 
-## 📚 Commands Reference
-
-### Package Management
-- `install <package>` - Install software
-- `uninstall <package>` - Remove software
-- `update` - Update all packages
-- `search <package>` - Search for packages
-
-### File Operations
-- `create <type> <name>` - Create files from templates
-- `delete <path>` - Safely delete files/folders
-- `move <src> <dest>` - Move files/folders
-- `copy <src> <dest>` - Copy files/folders
-
-### Process Management
-- `ps [filter]` - List processes
-- `kill <pid/name>` - Terminate process
-- `services` - List running services
-- `monitor` - Real-time system monitoring
-
-### System Information
-- `status` - System resource usage
-- `disk` - Disk usage information
-- `network` - Network status
-- `logs <file>` - Analyze log files
-
-### Navigation
-- `cd <path>` - Change directory
-- `bookmark <name>` - Bookmark current directory
-- `goto <bookmark>` - Go to bookmarked directory
-- `history` - Show command history
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ### Development Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ai-terminal.git
-cd ai-terminal
+git clone https://github.com/Yogesh-developer/magic-terminal.git
+cd magic-terminal
 
 # Create virtual environment
 python -m venv venv
@@ -219,10 +184,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - 📧 Email: support@aiterminal.dev
-- 🐛 Issues: [GitHub Issues](https://github.com/yourusername/ai-terminal/issues)
-- 💬 Discussions: [GitHub Discussions](https://github.com/yourusername/ai-terminal/discussions)
-- 📖 Documentation: [Read the Docs](https://ai-terminal.readthedocs.io/)
+- 🐛 Issues: [GitHub Issues](https://github.com/Yogesh-developer/magic-terminal/issues)
+- 💬 Discussions: [GitHub Discussions](https://github.com/yourusername/magic-terminal/discussions)
+- 📖 Documentation: [Read the Docs](https://github.com/Yogesh-developer/magic-terminal/blob/main/README.md)
 
 ---
-
-**Made with ❤️ by the AI Terminal Team**

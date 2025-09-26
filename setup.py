@@ -34,7 +34,7 @@ setup(
     description="A magical terminal assistant that understands natural language and makes command-line operations effortless",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/magic-terminal",
+    url="https://github.com/Yogesh-developer/magic-terminal",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -79,8 +79,8 @@ setup(
     },
     keywords="terminal, magic, assistant, automation, cli, shell, natural-language",
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/magic-terminal/issues",
-        "Source": "https://github.com/yourusername/magic-terminal",
-        "Documentation": "https://magic-terminal.readthedocs.io/",
+        "Bug Reports": "https://github.com/Yogesh-developer/magic-terminal/issues",
+        "Source": "https://github.com/Yogesh-developer/magic-terminal",
+        "Documentation": "https://github.com/Yogesh-developer/magic-terminal/wiki",
     },
 )
