@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import textwrap
@@ -10,6 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,6 +56,7 @@ class LLMClient:
             steps = self._parse_steps(response_text)
             if steps:
                 return steps
+            self._log_failed_response("plan", response_text)
 
         return self._fallback_plan(request)
 
@@ -70,6 +75,7 @@ class LLMClient:
             fixes = self._parse_steps(response_text)
             if fixes:
                 return fixes
+            self._log_failed_response("fix", response_text)
         return self._fallback_fix(failed_step, error_output)
 
     # ------------------------------------------------------------------
@@ -91,6 +97,8 @@ class LLMClient:
             Requirements:
               - Respond ONLY with valid JSON.
               - JSON must be a list of objects with keys: step (int), command (string), description (string).
+              - Each command must be a SINGLE STRING containing the complete command with all arguments.
+              - DO NOT split commands into arrays. Use complete command strings like "node --version", not ["node", "--version"].
               - Commands must be safe, idempotent where possible, and include any prerequisites
                 such as package index refresh if required.
               - Use platform-appropriate package managers (apt, yum, pacman, brew, winget, etc.).
@@ -99,13 +107,14 @@ class LLMClient:
             Example response:
             [
               {{"step": 1, "command": "sudo apt update", "description": "Refresh package index"}},
-              {{"step": 2, "command": "sudo apt install -y git", "description": "Install Git"}}
+              {{"step": 2, "command": "sudo apt install -y git", "description": "Install Git"}},
+              {{"step": 3, "command": "node --version", "description": "Check Node.js version"}}
             ]
 
             User request: {request}
             """
         ).strip()
-
+    
     def _build_fix_prompt(
         self,
         failed_step: PlanStep,
@@ -146,6 +155,13 @@ class LLMClient:
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️  LLM call failed: {exc}")
         return None
+
+    def _log_failed_response(self, kind: str, response_text: str) -> None:
+        snippet = response_text.strip()
+        if len(snippet) > 600:
+            snippet = snippet[:600] + "…"
+        logger.warning("LLM %s response could not be parsed; raw response: %s", kind, snippet)
+        print(f"⚠️  Could not parse LLM {kind} response. See logs for details.")
 
     def _call_openai(self, prompt: str) -> str:
         headers = {

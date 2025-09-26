@@ -17,11 +17,17 @@ import atexit
 import time
 import psutil
 import threading
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set, Union
 from dataclasses import dataclass
 from enum import Enum
 from difflib import get_close_matches
+
+try:
+    from .llm_client import LLMClient, PlanStep
+except ImportError:  # When executed as a script
+    from llm_client import LLMClient, PlanStep
 
 try:
     from jsonschema import validate, ValidationError
@@ -311,6 +317,7 @@ class EnhancedAITerminal:
         self.file_ops = FileOperations()
         self.process_manager = ProcessManager()
         self.system_monitor = SystemMonitor()
+        self.llm_client = self._init_llm_client()
         
         # Configuration
         self.config = self._load_config()
@@ -696,37 +703,283 @@ CAPABILITIES:
 
 ALWAYS return valid JSON with this schema:
 {{
-    "commands": ["command1", "command2"],
+    "commands": ["full command with all arguments", "another complete command"],
     "description": "what will be executed",
     "type": "install|delete|create|update|navigate|process|monitor|dev_tools|file_ops",
     "working_directory": "optional/path"
 }}
 
+IMPORTANT: Each command in the "commands" array must be a COMPLETE command string with all arguments.
+For example: ["docker run --help", "ls -la"] NOT ["docker", "run", "--help", "ls", "-la"]
+
 Convert the user's request to appropriate terminal commands."""
     
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM response"""
+        logger.debug(f"Raw LLM response: {content}")
+        
         try:
             # Try to extract JSON from response
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
+                parsed_response = json.loads(json_match.group())
             else:
                 # Try parsing the whole content
-                return json.loads(content)
+                parsed_response = json.loads(content)
         except json.JSONDecodeError:
             # Handle double-encoded JSON (quoted JSON string)
             try:
                 if content.startswith('"') and content.endswith('"'):
                     # Remove outer quotes and parse
                     unquoted = json.loads(content)
-                    return json.loads(unquoted)
+                    parsed_response = json.loads(unquoted)
                 else:
                     # Try parsing as quoted JSON without outer quotes
-                    return json.loads(json.loads(f'"{content}"'))
+                    parsed_response = json.loads(json.loads(f'"{content}"'))
             except (json.JSONDecodeError, TypeError):
                 logger.error(f"Failed to parse LLM response: {content}")
                 raise ValueError("LLM response did not contain valid JSON")
+        
+        logger.debug(f"Parsed LLM response: {parsed_response}")
+        
+        # Fix incorrectly split commands
+        if 'commands' in parsed_response:
+            commands = parsed_response['commands']
+            fixed_commands = self._fix_split_commands(commands)
+            if fixed_commands != commands:
+                logger.info(f"Fixed split commands: {commands} -> {fixed_commands}")
+                parsed_response['commands'] = fixed_commands
+        
+        return parsed_response
+    
+    def _fix_split_commands(self, commands: List[str]) -> List[str]:
+        """Fix commands that have been incorrectly split into separate words"""
+        if not commands:
+            return commands
+        
+        # Check if we have a pattern that suggests incorrect splitting
+        # Common patterns: single words that should be part of a larger command
+        fixed_commands = []
+        i = 0
+        
+        while i < len(commands):
+            current_cmd = commands[i].strip()
+            
+            # Check if this looks like a base command that should have arguments
+            if self._is_base_command(current_cmd) and i + 1 < len(commands):
+                # Try to reconstruct the full command
+                full_command_parts = [current_cmd]
+                j = i + 1
+                
+                # Collect subsequent parts that look like arguments
+                while j < len(commands) and self._looks_like_argument(commands[j]):
+                    full_command_parts.append(commands[j].strip())
+                    j += 1
+                
+                # If we collected multiple parts, join them
+                if len(full_command_parts) > 1:
+                    fixed_commands.append(' '.join(full_command_parts))
+                    i = j
+                else:
+                    fixed_commands.append(current_cmd)
+                    i += 1
+            else:
+                fixed_commands.append(current_cmd)
+                i += 1
+        
+        return fixed_commands
+    
+    def _is_base_command(self, cmd: str) -> bool:
+        """Check if a string looks like a base command that typically takes arguments"""
+        base_commands = {
+            'docker', 'git', 'npm', 'pip', 'brew', 'apt', 'yum', 'node', 'python', 'python3',
+            'ls', 'cd', 'mkdir', 'rm', 'cp', 'mv', 'cat', 'grep', 'find', 'ps', 'top',
+            'curl', 'wget', 'ssh', 'scp', 'rsync', 'tar', 'zip', 'unzip'
+        }
+        return cmd.lower() in base_commands
+    
+    def _looks_like_argument(self, arg: str) -> bool:
+        """Check if a string looks like a command argument"""
+        arg = arg.strip()
+        if not arg:
+            return False
+        
+        # Arguments typically start with - or --, or are subcommands/parameters
+        if arg.startswith('-'):
+            return True
+        
+        # Common subcommands
+        subcommands = {
+            'run', 'build', 'push', 'pull', 'install', 'uninstall', 'update', 'upgrade',
+            'start', 'stop', 'restart', 'status', 'list', 'show', 'help', 'version',
+            'add', 'commit', 'clone', 'checkout', 'merge', 'branch', 'log', 'diff'
+        }
+        
+        if arg.lower() in subcommands:
+            return True
+        
+        # If it's a single word without spaces and doesn't look like a standalone command
+        if ' ' not in arg and not self._is_base_command(arg):
+            return True
+        
+        return False
+
+    def _is_already_installed(self, command: str, package: str) -> bool:
+        """Determine if a package appears to already be installed."""
+        command_lower = command.lower()
+
+        # Quick command availability check
+        if shutil.which(package):
+            return True
+
+        # Package-manager specific checks
+        if command_lower.startswith("brew install"):
+            return self._run_check_command(["brew", "list", "--versions", package]) or \
+                self._run_check_command(["brew", "list", "--cask", package])
+
+        if command_lower.startswith("sudo apt") or command_lower.startswith("apt"):
+            return self._run_check_command(["dpkg", "-s", package])
+
+        if command_lower.startswith("sudo yum") or command_lower.startswith("yum"):
+            return self._run_check_command(["rpm", "-q", package])
+
+        if command_lower.startswith("pip install"):
+            return self._run_check_command(["pip", "show", package]) or \
+                self._run_check_command(["pip3", "show", package])
+
+        if command_lower.startswith("npm install"):
+            return self._run_check_command(["npm", "list", "-g", package])
+
+        if command_lower.startswith("winget install"):
+            return self._run_check_command(["winget", "list", package])
+
+        if command_lower.startswith("choco install"):
+            return self._run_check_command(["choco", "list", "--local-only", package])
+
+        return False
+
+    def _run_check_command(self, args: List[str]) -> bool:
+        """Run a helper command to detect existing installations."""
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except FileNotFoundError:
+            return False
+        except subprocess.TimeoutExpired:
+            return False
+
+        if result.returncode != 0:
+            return False
+
+        output = (result.stdout or "").strip()
+        error = (result.stderr or "").strip()
+        return bool(output) or "installed" in error.lower()
+
+    def _init_llm_client(self) -> Optional[LLMClient]:
+        try:
+            return LLMClient()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Failed to initialize LLM client: {exc}")
+            return None
+
+    def _prompt_confirmation(self, message: str) -> bool:
+        """Prompt the user for confirmation, honoring auto-confirm config."""
+        if self.config.get('auto_confirm_safe', False):
+            return True
+        return input(f"{message} [y/N]: ").strip().lower() in {"y", "yes"}
+
+    def _escalate_to_llm_failure(
+        self,
+        *,
+        failed_command: str,
+        error_output: str,
+        executed_steps: List[PlanStep],
+        user_input: str,
+        working_dir: str,
+    ) -> bool:
+        if not self.llm_client:
+            print("❌ LLM assistance unavailable. Manual intervention required.")
+            return False
+
+        print("🤖 Escalating failure to LLM for guidance...")
+
+        failed_step = PlanStep(
+            step=len(executed_steps) + 1,
+            command=failed_command,
+            description="Failed command",
+        )
+
+        try:
+            fix_steps = self.llm_client.suggest_fix(
+                failed_step=failed_step,
+                error_output=error_output,
+                executed_steps=executed_steps,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ LLM recovery attempt failed: {exc}")
+            return False
+
+        if not fix_steps:
+            print("❌ LLM did not provide any recovery steps. Manual intervention required.")
+            return False
+
+        print("📋 LLM suggested recovery plan:")
+        for step in fix_steps:
+            desc = step.description or step.command
+            print(f"  {step.step}. {desc}")
+
+        if not self._prompt_confirmation("Execute LLM recovery plan?"):
+            print("❌ Recovery plan rejected by user. Manual intervention required.")
+            return False
+
+        for idx, step in enumerate(fix_steps, start=1):
+            print(f"🔁 [LLM {idx}/{len(fix_steps)}] {step.command}")
+            result = self.execute_command(step.command, working_dir)
+
+            if result.output:
+                print(result.output)
+            if result.error:
+                print(f"⚠️  {result.error}")
+
+            if not result.success:
+                print("❌ LLM recovery step failed. Manual intervention required.")
+                return False
+
+            executed_steps.append(
+                PlanStep(
+                    step=len(executed_steps) + 1,
+                    command=step.command,
+                    description=step.description or "LLM recovery step",
+                )
+            )
+
+        print("🔁 Retrying original command after LLM fixes...")
+        retry_result = self.execute_command(failed_command, working_dir)
+
+        if retry_result.output:
+            print(retry_result.output)
+        if retry_result.error:
+            print(f"⚠️  {retry_result.error}")
+
+        if not retry_result.success:
+            print("❌ Command still failing after LLM recovery. Manual intervention required.")
+            return False
+
+        executed_steps.append(
+            PlanStep(
+                step=len(executed_steps) + 1,
+                command=failed_command,
+                description="Command retried after LLM fix",
+            )
+        )
+
+        print("✅ Command succeeded after LLM-guided recovery.")
+        return True
     
     def _advanced_fallback(self, user_input: str) -> Dict[str, Any]:
         """Advanced fallback for when LLM is unavailable"""
@@ -827,6 +1080,8 @@ for entry in sorted(selected.iterdir()):
                 print("❌ Execution cancelled.")
                 return False
         
+        executed_steps: List[PlanStep] = []
+
         # Execute commands
         for i, cmd in enumerate(commands):
             print(f"🔧 [{i+1}/{len(commands)}] {cmd}")
@@ -836,6 +1091,16 @@ for entry in sorted(selected.iterdir()):
             start_time = time.time() if install_target else None
             
             if install_target:
+                if self._is_already_installed(cmd, install_target):
+                    print(f"✅ {install_target} is already installed. Skipping command.")
+                    executed_steps.append(
+                        PlanStep(
+                            step=len(executed_steps) + 1,
+                            command=cmd,
+                            description=f"Skipped installation; {install_target} already present",
+                        )
+                    )
+                    continue
                 print(f"⬇️ Installing {install_target} (this may take a moment)...")
             
             result = self.execute_command(cmd, working_dir)
@@ -844,26 +1109,54 @@ for entry in sorted(selected.iterdir()):
                 duration = time.time() - start_time
                 status = "✅" if result.success else "⚠️"
                 print(f"{status} Installation step for {install_target} finished in {duration:.1f}s")
-            
+
             if result.output:
                 print(result.output)
             if result.error:
                 print(f"⚠️  {result.error}")
-            
-            if not result.success:
-                print(f"❌ Command failed: {cmd}")
-                # Try intelligent recovery
-                recovery_success = self._attempt_intelligent_recovery(cmd, result.error, user_input)
-                if not recovery_success:
-                    return False
-        
+
+            if result.success:
+                executed_steps.append(
+                    PlanStep(
+                        step=len(executed_steps) + 1,
+                        command=cmd,
+                        description="Executed successfully",
+                    )
+                )
+                continue
+
+            print(f"❌ Command failed: {cmd}")
+
+            # Try heuristic recovery first
+            if self._attempt_intelligent_recovery(cmd, result.error, user_input):
+                executed_steps.append(
+                    PlanStep(
+                        step=len(executed_steps) + 1,
+                        command=cmd,
+                        description="Recovered via heuristic fix",
+                    )
+                )
+                continue
+
+            # Escalate to LLM for assistance
+            if self._escalate_to_llm_failure(
+                failed_command=cmd,
+                error_output=result.error,
+                executed_steps=executed_steps,
+                user_input=user_input,
+                working_dir=working_dir,
+            ):
+                continue
+
+            print("❌ Manual intervention required. Aborting remaining steps.")
+            return False
+
         return True
-    
+
     def _extract_install_target(self, command: str) -> Optional[str]:
         """Extract package name from install command"""
         patterns = [
             r"brew\s+install(?:\s+--cask)?\s+([\w\-\.]+)",
-            r"sudo\s+apt(?:-get)?\s+install\s+(?:-y\s+)?([\w\-\.]+)",
             r"sudo\s+yum\s+install\s+(?:-y\s+)?([\w\-\.]+)",
             r"choco\s+install\s+([\w\-\.]+)",
             r"pip\s+install\s+([\w\-\.]+)",
