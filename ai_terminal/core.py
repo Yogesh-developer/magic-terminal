@@ -318,6 +318,7 @@ class EnhancedAITerminal:
         # LLM settings
         self.ollama_url = "http://localhost:11434"
         self.grok_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.available_models = self._check_ollama()
         
         # State management
@@ -580,7 +581,9 @@ class EnhancedAITerminal:
             'user' in lower_input and any(word in lower_input for word in ['list', 'show'])):
             return self._handle_user_directory_listing()
         
-        if self.grok_api_key:
+        if self.openai_api_key:
+            return self._call_openai(user_input)
+        elif self.grok_api_key:
             return self._call_grok(user_input)
         elif self.available_models:
             return self._call_ollama(user_input)
@@ -611,6 +614,34 @@ class EnhancedAITerminal:
         data = response.json()
         content = data["message"]["content"]
         logger.debug(f"Ollama raw content: {content}")
+        
+        return self._parse_llm_response(content)
+    
+    def _call_openai(self, user_input: str) -> Dict[str, Any]:
+        """Call OpenAI API"""
+        headers = {
+            "Authorization": f"Bearer {self.openai_api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-3.5-turbo",
+            "temperature": 0.1,
+            "messages": [
+                {"role": "system", "content": self._get_system_prompt()},
+                {"role": "user", "content": user_input}
+            ]
+        }
+        
+        logger.info(f"🧠 OpenAI analyzing: '{user_input}'")
+        print(f"🧠 Analyzing: '{user_input}'")
+        
+        response = requests.post("https://api.openai.com/v1/chat/completions", 
+                               headers=headers, json=payload, timeout=45)
+        if not response.ok:
+            raise Exception(f"OpenAI API error: {response.status_code}")
+        
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
         
         return self._parse_llm_response(content)
     

@@ -1,191 +1,278 @@
 # 🪄 Magic Terminal
 
-A magical terminal assistant that understands natural language and makes command-line operations effortless with intelligent automation.
+Magic Terminal is a cross-platform, AI-assisted command-line copilot that converts natural language instructions into safe, auditable shell commands. It streamlines installation, automation, diagnostics, and development workflows while providing human-readable previews, intelligent recovery, and multi-model failovers.
 
 ![Magic Terminal Demo](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 
-## ✨ Features
+---
 
-- 🧠 **Natural Language Processing** - Describe what you want in plain English
-- 📦 **Package Management** - Install, update, and manage software across platforms
-- 🔧 **Process Management** - Monitor, kill, and manage system processes
-- 📁 **File Operations** - Create, delete, move files with templates and safety checks
-- 🖥️ **System Monitoring** - Real-time resource usage and system information
-- 🔄 **Intelligent Recovery** - Automatic error analysis and alternative suggestions
-- 🛡️ **Safety Features** - Confirmation prompts and dangerous command detection
-- 🌐 **Cross-Platform** - Works on Windows, macOS, and Linux
-- 🎯 **Smart Fallbacks** - Works even when AI services are unavailable
+## 🔥 Highlights
 
-## 🚀 Quick Start
+- **Natural Language Automation** — Describe desired outcomes (e.g., "install docker and start it") and Magic Terminal synthesizes the shell commands.
+- **Safety First** — Every command is previewed with context, destructive patterns are flagged, and execution requires confirmation (unless auto-confirm is enabled).
+- **Intelligent Recovery** — When commands fail, Magic Terminal analyzes stderr, suggests fixes, and retries with smarter alternatives.
+- **Multi-LLM Backends** — Works with OpenAI, Grok (xAI), and local Ollama models; degrades gracefully to deterministic heuristics.
+- **Cross-Platform Tooling** — Supports package managers, filesystem operations, process management, system monitoring, and development workflows on macOS, Linux, and Windows.
+- **Persistent Experience** — Saves history, configuration, bookmarks, and aliases to the user's home directory.
 
-### Installation
+---
+
+## 🧠 Architecture Overview
+
+```
+┌──────────────┐      ┌────────────────────────────┐      ┌─────────────────────┐
+│ CLI / Prompt │ ───▶ │ Intent Understanding        │ ───▶ │ Execution & Recovery │
+└──────────────┘      │ (LLM orchestration + rules) │      └─────────────────────┘
+                      └────────────▲────────────────┘                │
+                                   │                                 │
+                     ┌─────────────┴────────────┐        ┌───────────▼────────┐
+                     │ AI Backends               │        │ Persistent Services │
+                     │ • OpenAI API              │        │ • History            │
+                     │ • Grok / X.AI             │        │ • Configuration      │
+                     │ • Ollama (local models)   │        │ • Recovery cache     │
+                     │ • Heuristic fallback      │        └─────────────────────┘
+                     └───────────────────────────┘
+```
+
+Core components live in `ai_terminal/core.py` while CLI bootstrapping is provided by `ai_terminal/main.py`.
+
+---
+
+## ⚡ Quick Start
 
 ```bash
-# Clone the repository
+# Clone repository
 git clone https://github.com/Yogesh-developer/magic-terminal.git
 cd magic-terminal
 
 # Install dependencies
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
-# Install the package
-pip install -e .
+# Install Magic Terminal in editable mode
+pip3 install -e .
+
+# Launch the assistant
+magic-terminal
 ```
 
-### Setup
+If your shell cannot find the `magic-terminal` script, append the Python user-bin path to `PATH` (macOS example):
 
 ```bash
-# Run the setup wizard
-ai-terminal --setup
-
-# Or start directly
-ai-terminal
+echo 'export PATH="$HOME/Library/Python/3.9/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
-## 🎮 Usage Examples
+Aliases `magic` and `mt` are also installed for convenience.
 
-### Natural Language Commands
+---
+
+## 📦 Installation Methods
+
+- **Editable install (development)**
+  ```bash
+  pip3 install -e .
+  ```
+- **Direct GitHub install (users)**
+  ```bash
+  pip install git+https://github.com/Yogesh-developer/magic-terminal.git
+  ```
+- **Virtual environment isolation**
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  pip install -e .
+  ```
+
+---
+
+## 🤖 Configuring AI Backends
+
+Magic Terminal automatically selects the first available backend in this order:
+
+1. **OpenAI** (requires `OPENAI_API_KEY`)
+2. **Grok / X.AI** (`XAI_API_KEY` or `GROK_API_KEY`)
+3. **Ollama** (local models at `OLLAMA_URL`, default `http://localhost:11434`)
+4. **Heuristic fallback**
+
+Set environment variables in your shell profile:
 
 ```bash
-🤖 AI-Terminal> install firefox
-🤖 AI-Terminal> show me running processes using too much memory
-🤖 AI-Terminal> create a python script called hello.py
-🤖 AI-Terminal> delete all .tmp files in this directory
-🤖 AI-Terminal> update all my packages
-🤖 AI-Terminal> show system resource usage
-```
-
-### Direct Commands
-
-```bash
-# Package management
-ai-terminal install docker
-ai-terminal update system
-
-# File operations
-ai-terminal create python my_script.py
-ai-terminal delete old_files/
-
-# System monitoring
-ai-terminal monitor processes
-ai-terminal show memory usage
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-
-```bash
-# Ollama server URL (default: http://localhost:11434)
+export OPENAI_API_KEY="sk-..."          # Optional: OpenAI GPT
+export XAI_API_KEY="xai-..."            # Optional: Grok
+export GROK_API_KEY="xai-..."           # Alias for Grok
 export OLLAMA_URL="http://localhost:11434"
-
-# Grok API key (optional)
-export XAI_API_KEY="your-grok-api-key"
-
-# Enable fallback mode
-export AI_TERMINAL_ALLOW_FALLBACK=1
+export AI_TERMINAL_ALLOW_FALLBACK=1      # Allow heuristics when LLM fails
 ```
 
-### Configuration File
-
-The terminal creates a configuration file at `~/.ai_terminal_config.json`:
-
-```json
-{
-  "auto_confirm_safe": false,
-  "use_trash": true,
-  "max_history": 1000,
-  "bookmarks": {},
-  "aliases": {},
-  "preferred_package_manager": null
-}
-```
-
-## 🛠️ Requirements
-
-### System Requirements
-
-- Python 3.8 or higher
-- 4GB RAM minimum
-- Internet connection for AI features
-
-### Dependencies
-
-- `requests>=2.28.0` - HTTP requests
-- `psutil>=5.9.0` - System monitoring
-- `jsonschema>=4.0.0` - JSON validation
-- `colorama>=0.4.4` - Cross-platform colored output
-- `rich>=12.0.0` - Rich text formatting
-- `prompt-toolkit>=3.0.0` - Enhanced input handling
-
-### Optional Dependencies
-
-- **Ollama** - Local AI model server (recommended)
-- **Grok API** - Cloud AI service (alternative)
-
-## 🔌 AI Backend Setup
-
-### Option 1: Ollama (Recommended)
+### Ollama Setup (local LLM)
 
 ```bash
-# Install Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull a model
 ollama pull llama3:8b
-
-# Start Ollama (runs automatically on most systems)
 ollama serve
 ```
 
-### Option 2: Grok API
+Run `magic-terminal --setup` to verify connectivity and dependencies.
+
+---
+
+## 🕹️ Usage Guide
+
+Launching the CLI:
 
 ```bash
-# Set your API key
-export XAI_API_KEY="your-grok-api-key"
+magic-terminal
 ```
 
+Example interactions:
 
-### Development Setup
+```text
+🪄 Magic-Terminal> install docker desktop
+🪄 Magic-Terminal> show me running processes using too much memory
+🪄 Magic-Terminal> create python backup_logs.py that compresses yesterday's logs
+🪄 Magic-Terminal> delete all .tmp files in the current directory
+```
+
+Each request produces an execution plan similar to:
+
+```text
+🎯 Install Docker Desktop
+📂 Working Directory: /Users/alex
+⚡ Commands:
+  brew install --cask docker
+✅ Execute these commands? [y/N]:
+```
+
+Commands are executed only after confirmation (unless configured otherwise). Output is streamed live, and failures trigger automatic recovery attempts.
+
+Exit the assistant with `exit`, `quit`, or `Ctrl+C`.
+
+---
+
+## 📚 Command Catalogue
+
+Magic Terminal’s LLM-guided behavior covers a wide range of topics:
+
+- **Package Management** — install/uninstall packages, update systems, search repositories.
+- **File & Project Operations** — create templates, organize directories, scaffold projects.
+- **Process & Service Control** — list processes, kill tasks, inspect services, analyze logs.
+- **System Monitoring** — inspect CPU/memory usage, disk utilization, network stats, system info.
+- **Development Tooling** — manage git workflows, run tests, configure environments, lint code.
+- **Navigation & Productivity** — change directories intelligently, bookmark locations, manage aliases.
+
+Because results are LLM-driven, review the command preview carefully before approving execution.
+
+---
+
+## 🔁 Intelligent Recovery
+
+When a command fails, Magic Terminal:
+
+1. Parses stderr and identifies known failure patterns.
+2. Suggests alternative commands (e.g., macOS `top -o %MEM` ➜ `top -o mem -l 1`).
+3. Executes alternatives automatically until a success or all options are exhausted.
+4. Falls back to heuristic commands if the LLM backend is unavailable.
+
+Recovery activity is logged to `~/.ai_terminal_logs/enhanced_terminal.log` for auditing.
+
+---
+
+## ⚙️ Configuration & Persistence
+
+- **Configuration file**: `~/.ai_terminal_config.json`
+  ```json
+  {
+    "auto_confirm_safe": false,
+    "use_trash": true,
+    "max_history": 1000,
+    "bookmarks": {},
+    "aliases": {},
+    "preferred_package_manager": null
+  }
+  ```
+- **Command history**: `~/.ai_terminal_history`
+- **Logs**: `~/.ai_terminal_logs/`
+
+Bookmarks, aliases, and preferences can be updated interactively or by editing the config file.
+
+---
+
+## 🛠️ Development Workflow
 
 ```bash
-# Clone the repository
 git clone https://github.com/Yogesh-developer/magic-terminal.git
 cd magic-terminal
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install development dependencies
-pip install -e ".[dev]"
+pip install -e .[dev]
+pre-commit install
 
-# Run tests
-pytest
-
-# Format code
+# Lint and format
 black ai_terminal/
 flake8 ai_terminal/
+mypy ai_terminal/
+
+# Run automated tests
+pytest
 ```
+
+---
+
+## ✅ Testing Checklist
+
+- **Unit tests**: `pytest`
+- **Manual scenarios**:
+  - Offline mode (no API keys, Ollama down) ➜ verify heuristic fallback
+  - Package installation on macOS/Linux/Windows ➜ confirm smart suggestions
+  - Resource monitoring commands ➜ confirm platform-specific handling
+- **Smoke test**: `python3 ai_terminal/main.py`
+
+---
+
+## 🐞 Troubleshooting
+
+- **Command not found (`magic-terminal`)** — add the user scripts directory to `PATH` (see Quick Start).
+- **LLM response invalid / JSON parsing errors** — check logs and ensure the system prompt enforces JSON; fallback is automatic after three attempts.
+- **`urllib3 NotOpenSSLWarning` on macOS** — macOS ships LibreSSL; install Python via Homebrew or ignore (warning only).
+- **Permission denied** — Magic Terminal detects destructive commands and prompts for confirmation; rerun with `sudo` if needed.
+- **Ollama connection errors** — verify `ollama serve` is running and `OLLAMA_URL` matches.
+
+---
+
+## ❓ FAQ
+
+- **Does Magic Terminal require internet access?**
+  No, if you use Ollama with local models. OpenAI and Grok require internet access.
+
+- **Can I run it non-interactively?**
+  Batch mode is on the roadmap. For now, use the interactive CLI or integrate `EnhancedAITerminal` directly in Python scripts.
+
+- **How do I disable command confirmation?**
+  Set `"auto_confirm_safe": true` in the configuration file (feature toggle coming to CLI).
+
+- **Is Windows supported?**
+  Yes. Package suggestions use Chocolatey (`choco`) or Winget, and PowerShell commands are generated when appropriate.
+
+- **How do I uninstall?**
+  ```bash
+  pip3 uninstall magic-terminal
+  ```
+
+---
+
+## 🙌 Acknowledgements
+
+- [Ollama](https://ollama.ai) for enabling offline LLM usage.
+- [OpenAI](https://platform.openai.com/) and [Grok](https://x.ai) for compatible API backends.
+- [Rich](https://github.com/Textualize/rich) for terminal rendering utilities.
+- [psutil](https://github.com/giampaolo/psutil) for system metrics collection.
+
+---
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Ollama](https://ollama.ai) for local AI model serving
-- [Grok](https://x.ai) for cloud AI services
-- [Rich](https://github.com/Textualize/rich) for beautiful terminal output
-- [psutil](https://github.com/giampaolo/psutil) for system monitoring
-
-## 📞 Support
-
-- 📧 Email: support@aiterminal.dev
-- 🐛 Issues: [GitHub Issues](https://github.com/Yogesh-developer/magic-terminal/issues)
-- 💬 Discussions: [GitHub Discussions](https://github.com/yourusername/magic-terminal/discussions)
-- 📖 Documentation: [Read the Docs](https://github.com/Yogesh-developer/magic-terminal/blob/main/README.md)
-
----
+Magic Terminal is distributed under the MIT License. See [`LICENSE`](LICENSE) for full details.

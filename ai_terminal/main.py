@@ -109,11 +109,22 @@ def run_setup():
     
     # Check API keys
     print("\n2. Checking API keys...")
+    api_keys_found = []
+    
+    if os.getenv('OPENAI_API_KEY'):
+        api_keys_found.append("OpenAI")
+        print("✅ OpenAI API key is configured")
+    
     if os.getenv('XAI_API_KEY') or os.getenv('GROK_API_KEY'):
+        api_keys_found.append("Grok")
         print("✅ Grok API key is configured")
-    else:
-        print("⚠️  Grok API key not found")
-        print("   Set XAI_API_KEY or GROK_API_KEY environment variable")
+    
+    if not api_keys_found:
+        print("⚠️  No API keys found")
+        print("   Available options:")
+        print("   - Set OPENAI_API_KEY for OpenAI GPT")
+        print("   - Set XAI_API_KEY for Grok")
+        print("   - Install Ollama for local AI")
     
     # Check dependencies
     print("\n3. Checking dependencies...")

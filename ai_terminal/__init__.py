@@ -1,5 +1,5 @@
-"""AI-powered terminal package."""
+"""Magic Terminal package exports."""
 
-from .terminal import AITerminalApp
+from .core import EnhancedAITerminal
 
-__all__ = ["AITerminalApp"]
+__all__ = ["EnhancedAITerminal"]
