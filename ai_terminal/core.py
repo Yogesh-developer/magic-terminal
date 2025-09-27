@@ -15,14 +15,16 @@ import re
 import shlex
 import atexit
 import time
+import itertools
 import psutil
 import threading
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Set, Union
+from typing import Callable, Dict, Any, List, Optional, Tuple, Set, Union
 from dataclasses import dataclass
 from enum import Enum
 from difflib import get_close_matches
+from urllib.parse import urlparse
 
 try:
     from .llm_client import LLMClient, PlanStep
@@ -303,12 +305,237 @@ class SystemMonitor:
         return services
 
 
+class ProgressIndicator:
+    """Single-line progress reporter for long-running operations."""
+
+    def __init__(self, *, interval: float = 2.0) -> None:
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._message: str = ""
+        self._start_time: float = 0.0
+        self._spinner = itertools.cycle("|/-\\")
+        self._last_length: int = 0
+        self._max_length: int = 0
+        self._lock = threading.Lock()
+        self._tracker: Optional["DownloadTracker"] = None
+
+    @staticmethod
+    def _format_bytes(num_bytes: float) -> str:
+        units = ["B", "KB", "MB", "GB", "TB"]
+        value = float(num_bytes)
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} TB"
+
+    def _format_status(self, spinner: str, elapsed: float) -> str:
+        if self._tracker:
+            downloaded, total, speed, remaining = self._tracker.get_status()
+            parts = [f"{self._message} [{spinner}]"]
+            if downloaded is not None:
+                parts.append(f"{self._format_bytes(downloaded)} downloaded")
+            if total:
+                progress_pct = (downloaded / total * 100) if downloaded is not None and total > 0 else 0.0
+                parts.append(f"of {self._format_bytes(total)} ({progress_pct:.1f}%)")
+            if speed:
+                parts.append(f"at {self._format_bytes(speed)}/s")
+            if remaining:
+                parts.append(f"~{remaining:.0f}s remaining")
+            parts.append(f"elapsed {elapsed:.1f}s")
+            return " ".join(parts)
+
+        return f"{self._message} [{spinner}] elapsed {elapsed:.1f}s"
+
+    def _render_status(self, elapsed: float, spinner: Optional[str] = None) -> None:
+        if spinner is None:
+            spinner = next(self._spinner)
+        status = self._format_status(spinner, elapsed)
+        self._max_length = max(self._max_length, len(status))
+        with self._lock:
+            padding = self._max_length - len(status)
+            sys.stdout.write("\r" + status + (" " * padding))
+            sys.stdout.flush()
+            self._last_length = len(status)
+
+    def _clear_line(self) -> None:
+        with self._lock:
+            sys.stdout.write("\r" + " " * self._max_length + "\r")
+            sys.stdout.flush()
+            self._last_length = 0
+            self._max_length = 0
+
+    def start(self, message: str, tracker: Optional["DownloadTracker"] = None) -> None:
+        if self._thread is not None:
+            self.stop()
+
+        self._message = message
+        self._start_time = time.time()
+        self._spinner = itertools.cycle("|/-\\")
+        self._stop_event.clear()
+        self._tracker = tracker
+        self._max_length = 0
+
+        def _run() -> None:
+            while not self._stop_event.wait(self.interval):
+                elapsed = time.time() - self._start_time
+                self._render_status(elapsed)
+
+        self._render_status(0.0, spinner="*")
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def stop(self, final_message: Optional[str] = None) -> None:
+        if self._thread is None:
+            if final_message:
+                print(final_message)
+            return
+
+        self._stop_event.set()
+        self._thread.join()
+        self._thread = None
+
+        elapsed = time.time() - self._start_time
+        self._clear_line()
+        if final_message:
+            print(f"{final_message} (elapsed {elapsed:.1f}s)")
+        self._tracker = None
+
+
+class DownloadTracker:
+    """Abstract base for download progress tracking."""
+
+    def get_status(self) -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float]]:
+        raise NotImplementedError
+
+
+class BrewDownloadTracker(DownloadTracker):
+    """Track Homebrew download progress via cache file inspection."""
+
+    def __init__(self, cache_path: Optional[Path], file_name: Optional[str], total_bytes: Optional[int]) -> None:
+        self.cache_path = cache_path
+        self.file_name = file_name
+        self.total_bytes = total_bytes
+        self.cache_dirs: List[Path] = []
+        if cache_path and cache_path.parent:
+            self.cache_dirs.append(cache_path.parent)
+
+        # Mac default
+        self.cache_dirs.append(Path.home() / "Library/Caches/Homebrew/downloads")
+        # Linux default
+        self.cache_dirs.append(Path.home() / ".cache/Homebrew/downloads")
+        # Windows default
+        local_appdata = os.getenv("LOCALAPPDATA")
+        if local_appdata:
+            self.cache_dirs.append(Path(local_appdata) / "Homebrew/Cache/Downloads")
+
+        # Ensure uniqueness
+        seen: Set[Path] = set()
+        unique_dirs: List[Path] = []
+        for cache_dir in self.cache_dirs:
+            if cache_dir and cache_dir not in seen:
+                seen.add(cache_dir)
+                unique_dirs.append(cache_dir)
+        self.cache_dirs = unique_dirs
+        self._last_bytes = 0
+        self._last_time = time.time()
+        self._speed = 0.0
+        self._lock = threading.Lock()
+        self._current_path: Optional[Path] = None
+
+    def _resolve_path(self) -> Optional[Path]:
+        if self.cache_path and self.cache_path.exists():
+            return self.cache_path
+
+        if not self.file_name:
+            return None
+
+        for cache_dir in self.cache_dirs:
+            if not cache_dir.exists():
+                continue
+            pattern = f"*{self.file_name}*"
+            candidates = [p for p in cache_dir.glob(pattern) if p.is_file()]
+            if not candidates:
+                stem = Path(self.file_name).stem
+                candidates = [p for p in cache_dir.glob(f"*{stem}*") if p.is_file()]
+            if candidates:
+                return max(candidates, key=lambda p: p.stat().st_mtime)
+        return None
+
+    def get_status(self) -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float]]:
+        with self._lock:
+            now = time.time()
+            path = self._resolve_path()
+
+            if not path or not path.exists():
+                return None, self.total_bytes, None, None
+
+            if path != self._current_path:
+                self._current_path = path
+                self._last_bytes = 0
+                self._last_time = now
+                self._speed = 0.0
+
+            size = path.stat().st_size
+
+            delta_bytes = size - self._last_bytes
+            delta_time = now - self._last_time
+            if delta_time > 0:
+                instant_speed = delta_bytes / delta_time
+                if self._speed == 0.0:
+                    self._speed = instant_speed
+                else:
+                    self._speed = 0.7 * self._speed + 0.3 * instant_speed
+
+            self._last_bytes = size
+            self._last_time = now
+
+            remaining_time = None
+            if self.total_bytes and self._speed > 0:
+                remaining_bytes = max(self.total_bytes - size, 0)
+                remaining_time = remaining_bytes / self._speed if remaining_bytes > 0 else 0.0
+
+            speed = self._speed if self._speed > 0 else None
+            return size, self.total_bytes, speed, remaining_time
+
+
+class NetworkUsageTracker(DownloadTracker):
+    """Cross-platform tracker based on network interface statistics."""
+
+    def __init__(self) -> None:
+        self._start = psutil.net_io_counters()
+        self._last_time = time.time()
+        self._last_bytes = 0
+        self._speed = 0.0
+
+    def get_status(self) -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float]]:
+        now = time.time()
+        counters = psutil.net_io_counters()
+        downloaded = counters.bytes_recv - self._start.bytes_recv
+        delta_bytes = downloaded - self._last_bytes
+        delta_time = now - self._last_time
+
+        if delta_time > 0:
+            instant_speed = delta_bytes / delta_time if delta_bytes > 0 else 0.0
+            if self._speed == 0.0:
+                self._speed = instant_speed
+            else:
+                self._speed = 0.7 * self._speed + 0.3 * instant_speed
+
+        self._last_bytes = downloaded
+        self._last_time = now
+
+        speed = self._speed if self._speed > 0 else None
+        return max(downloaded, 0), None, speed, None
+
+
 class EnhancedAITerminal:
     """Enhanced AI Terminal with comprehensive functionality"""
     
     def __init__(self, *, enable_fallback: bool = True):
         self.system_os = platform.system().lower()
-        self.shell_prompt = "🤖 AI-Terminal> "
+        self.shell_prompt = "AI-Terminal> "
         self.current_dir = os.getcwd()
         self.allow_fallback = enable_fallback
         
@@ -317,6 +544,7 @@ class EnhancedAITerminal:
         self.file_ops = FileOperations()
         self.process_manager = ProcessManager()
         self.system_monitor = SystemMonitor()
+        self.progress_indicator = ProgressIndicator()
         self.llm_client = self._init_llm_client()
         
         # Configuration
@@ -337,9 +565,9 @@ class EnhancedAITerminal:
         self._setup_history()
         self._setup_logging()
         
-        logger.info("🚀 Enhanced AI Terminal initialized")
-        logger.info(f"💻 OS: {platform.system()} | Directory: {self.current_dir}")
-        logger.info(f"📦 Available package managers: {self.package_manager.available_managers}")
+        logger.info("Enhanced AI Terminal initialized")
+        logger.info(f"OS: {platform.system()} | Directory: {self.current_dir}")
+        logger.info(f"Available package managers: {self.package_manager.available_managers}")
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file"""
@@ -455,9 +683,9 @@ class EnhancedAITerminal:
     
     def run(self):
         """Main terminal loop"""
-        print("🚀 Enhanced AI Terminal")
-        print("💡 Type 'help' for commands, 'exit' to quit")
-        print("🔧 Advanced operations: install, delete, create, monitor, etc.")
+        print("Enhanced AI Terminal")
+        print("Type 'help' for commands, 'exit' to quit")
+        print("Advanced operations: install, delete, create, monitor, etc.")
         
         while True:
             try:
@@ -470,7 +698,7 @@ class EnhancedAITerminal:
                     readline.add_history(user_input)
                 
                 if user_input.lower() in ['exit', 'quit']:
-                    print("👋 Goodbye!")
+                    print("Goodbye!")
                     break
                 
                 if user_input.lower() == 'help':
@@ -481,47 +709,47 @@ class EnhancedAITerminal:
                 self._process_user_input(user_input)
                 
             except KeyboardInterrupt:
-                print("\n👋 Goodbye!")
+                print("\nGoodbye!")
                 break
             except Exception as e:
-                print(f"💥 Error: {e}")
+                print(f"Error: {e}")
                 logger.error(f"Unexpected error: {e}")
     
     def _show_help(self):
         """Show help information"""
         help_text = """
-🤖 Enhanced AI Terminal Commands:
+Enhanced AI Terminal Commands:
 
-📦 Package Management:
+Package Management:
   install <package>     - Install software package
   uninstall <package>   - Remove software package
-  update               - Update all packages
+  update                - Update all packages
 
-📁 File Operations:
+File Operations:
   create <type> <name>  - Create file from template
-  delete <path>        - Safely delete files/folders
-  mkdir <path>         - Create directories
+  delete <path>         - Safely delete files/folders
+  mkdir <path>          - Create directories
   
-🔧 Process Management:
-  ps [filter]          - List running processes
-  kill <pid/name>      - Terminate process
-  services             - List running services
+Process Management:
+  ps [filter]           - List running processes
+  kill <pid/name>       - Terminate process
+  services              - List running services
 
-📊 System Monitoring:
-  status               - System resource usage
-  monitor              - Real-time monitoring
-  logs <file>          - Analyze log files
+System Monitoring:
+  status                - System resource usage
+  monitor               - Real-time monitoring
+  logs <file>           - Analyze log files
 
-🧭 Navigation:
-  cd <path>            - Change directory
-  bookmark <name>      - Bookmark current directory
-  goto <bookmark>      - Go to bookmarked directory
+Navigation:
+  cd <path>             - Change directory
+  bookmark <name>       - Bookmark current directory
+  goto <bookmark>       - Go to bookmarked directory
 
-⚙️  Configuration:
-  config               - Show configuration
-  alias <name> <cmd>   - Create command alias
+Configuration:
+  config                - Show configuration
+  alias <name> <cmd>    - Create command alias
 
-💡 Natural Language:
+Natural Language:
   Just describe what you want to do in plain English!
   Examples:
   - "install python and create a new project"
@@ -537,20 +765,20 @@ class EnhancedAITerminal:
             command_info = self._understand_complex_command(user_input)
             
             if not command_info:
-                print("❌ Unable to understand the request")
+                print("Unable to understand the request")
                 return
             
-            print(f"🎯 {command_info.get('description', 'Executing command')}")
+            print(f"{command_info.get('description', 'Executing command')}")
             
             # Execute commands
             success = self._execute_commands(command_info, user_input)
             if success:
-                print("✅ Done")
+                print("Done")
             else:
-                print("❌ Failed")
+                print("Failed")
                 
         except Exception as e:
-            print(f"💥 Error: {e}")
+            print(f"Error: {e}")
             logger.error(f"Error processing input: {e}")
 
 
@@ -567,15 +795,15 @@ class EnhancedAITerminal:
             except ValueError as exc:
                 last_error = exc
                 logger.warning(f"LLM response invalid (attempt {attempt}/{max_attempts}): {exc}")
-                print(f"⚠️  LLM response invalid (attempt {attempt}/{max_attempts}). Retrying...")
+                print(f"Warning: LLM response invalid (attempt {attempt}/{max_attempts}). Retrying...")
             except Exception as exc:
                 last_error = exc
                 logger.warning(f"LLM call failed (attempt {attempt}/{max_attempts}): {exc}")
-                print(f"⚠️  LLM call failed (attempt {attempt}/{max_attempts}). Retrying...")
+                print(f"Warning: LLM call failed (attempt {attempt}/{max_attempts}). Retrying...")
         
         if self.allow_fallback:
             logger.warning(f"LLM unavailable after retries ({last_error}). Using fallback.")
-            print(f"⚠️  Using fallback commands instead.")
+            print("Warning: Using fallback commands instead.")
             return self._advanced_fallback(user_input)
         
         return None
@@ -610,8 +838,8 @@ class EnhancedAITerminal:
             "options": {"temperature": 0.1}
         }
         
-        logger.info(f"🧠 Ollama analyzing: '{user_input}'")
-        print(f"🧠 Analyzing: '{user_input}'")
+        logger.info(f"Ollama analyzing: '{user_input}'")
+        print(f"Analyzing: '{user_input}'")
         
         response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=45)
         if not response.ok:
@@ -639,8 +867,8 @@ class EnhancedAITerminal:
             ]
         }
         
-        logger.info(f"🧠 OpenAI analyzing: '{user_input}'")
-        print(f"🧠 Analyzing: '{user_input}'")
+        logger.info(f"OpenAI analyzing: '{user_input}'")
+        print(f"Analyzing: '{user_input}'")
         
         response = requests.post("https://api.openai.com/v1/chat/completions", 
                                headers=headers, json=payload, timeout=45)
@@ -667,8 +895,8 @@ class EnhancedAITerminal:
             ]
         }
         
-        logger.info(f"🧠 Grok analyzing: '{user_input}'")
-        print(f"🧠 Analyzing: '{user_input}'")
+        logger.info(f"Grok analyzing: '{user_input}'")
+        print(f"Analyzing: '{user_input}'")
         
         response = requests.post("https://api.x.ai/v1/chat/completions", 
                                headers=headers, json=payload, timeout=45)
@@ -903,10 +1131,10 @@ Convert the user's request to appropriate terminal commands."""
         working_dir: str,
     ) -> bool:
         if not self.llm_client:
-            print("❌ LLM assistance unavailable. Manual intervention required.")
+            print("LLM assistance unavailable. Manual intervention required.")
             return False
 
-        print("🤖 Escalating failure to LLM for guidance...")
+        print("Escalating failure to LLM for guidance...")
 
         failed_step = PlanStep(
             step=len(executed_steps) + 1,
@@ -921,14 +1149,14 @@ Convert the user's request to appropriate terminal commands."""
                 executed_steps=executed_steps,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"❌ LLM recovery attempt failed: {exc}")
+            print(f"LLM recovery attempt failed: {exc}")
             return False
 
         if not fix_steps:
-            print("❌ LLM did not provide any recovery steps. Manual intervention required.")
+            print("LLM did not provide any recovery steps. Manual intervention required.")
             return False
 
-        print("📋 LLM suggested recovery plan:")
+        print("LLM suggested recovery plan:")
         for i, step in enumerate(fix_steps, start=1):
             desc = step.description or step.command
             print(f"  {i}. {desc}")
@@ -938,7 +1166,7 @@ Convert the user's request to appropriate terminal commands."""
         choice = input("Execute: [a]ll steps, [1-9] specific step, or [n]one? ").strip().lower()
         
         if choice in {"n", "no", "none"}:
-            print("❌ Recovery plan rejected by user. Manual intervention required.")
+            print("Recovery plan rejected by user. Manual intervention required.")
             return False
         
         steps_to_execute = []
@@ -949,15 +1177,15 @@ Convert the user's request to appropriate terminal commands."""
             if 1 <= step_num <= len(fix_steps):
                 steps_to_execute = [fix_steps[step_num - 1]]
             else:
-                print(f"❌ Invalid step number {step_num}. Must be between 1 and {len(fix_steps)}.")
+                print(f"Invalid step number {step_num}. Must be between 1 and {len(fix_steps)}.")
                 return False
         else:
-            print("❌ Invalid choice. Recovery plan aborted.")
+            print("Invalid choice. Recovery plan aborted.")
             return False
 
         recovery_successful = False
         for idx, step in enumerate(steps_to_execute, start=1):
-            print(f"🔁 [LLM {idx}/{len(steps_to_execute)}] {step.command}")
+            print(f"LLM step {idx}/{len(steps_to_execute)}: {step.command}")
             result = self.execute_command(step.command, working_dir)
 
             if result.output:
@@ -965,10 +1193,10 @@ Convert the user's request to appropriate terminal commands."""
                 # If recovery step produced output, consider it successful
                 recovery_successful = True
             if result.error:
-                print(f"⚠️  {result.error}")
+                print(f"Warning: {result.error}")
 
             if not result.success:
-                print("❌ LLM recovery step failed. Manual intervention required.")
+                print("LLM recovery step failed. Manual intervention required.")
                 return False
 
             executed_steps.append(
@@ -982,19 +1210,19 @@ Convert the user's request to appropriate terminal commands."""
         # Only retry original command if it makes sense to do so
         # Don't retry if recovery steps already provided the answer
         if self._should_retry_original_command(failed_command, steps_to_execute, recovery_successful):
-            print("🔁 Retrying original command after LLM fixes...")
+            print("Retrying original command after LLM fixes...")
             retry_result = self.execute_command(failed_command, working_dir)
 
             if retry_result.output:
                 print(retry_result.output)
             if retry_result.error:
-                print(f"⚠️  {retry_result.error}")
+                print(f"Warning: {retry_result.error}")
 
             if not retry_result.success:
-                print("❌ Command still failing after LLM recovery. Manual intervention required.")
+                print("Command still failing after LLM recovery. Manual intervention required.")
                 return False
         else:
-            print("✅ Recovery steps completed successfully!")
+            print("Recovery steps completed successfully!")
             return True
 
         executed_steps.append(
@@ -1005,7 +1233,7 @@ Convert the user's request to appropriate terminal commands."""
             )
         )
 
-        print("✅ Command succeeded after LLM-guided recovery.")
+        print("Command succeeded after LLM-guided recovery.")
         return True
 
     def _should_retry_original_command(self, failed_command: str, recovery_steps: List[PlanStep], recovery_successful: bool) -> bool:
@@ -1124,31 +1352,32 @@ for entry in sorted(selected.iterdir()):
         
         working_dir = command_info.get("working_directory", self.current_dir)
         
-        print(f"📂 Working Directory: {working_dir}")
-        print("⚡ Commands:")
+        print(f"Working Directory: {working_dir}")
+        print("Commands:")
         for cmd in commands:
             print(f"  {cmd}")
         
         # Ask for confirmation
         if not self.config.get('auto_confirm_safe', False):
-            confirm = input("✅ Execute these commands? [y/N]: ").strip().lower()
+            confirm = input("Execute these commands? [y/N]: ").strip().lower()
             if confirm not in {"y", "yes"}:
-                print("❌ Execution cancelled.")
+                print("Execution cancelled.")
                 return False
         
         executed_steps: List[PlanStep] = []
 
         # Execute commands
         for i, cmd in enumerate(commands):
-            print(f"🔧 [{i+1}/{len(commands)}] {cmd}")
+            print(f"Running step {i+1}/{len(commands)}: {cmd}")
             
             # Check if it's an installation command
             install_target = self._extract_install_target(cmd)
             start_time = time.time() if install_target else None
+            tracker: Optional[DownloadTracker] = None
             
             if install_target:
                 if self._is_already_installed(cmd, install_target):
-                    print(f"✅ {install_target} is already installed. Skipping command.")
+                    print(f"{install_target} is already installed. Skipping command.")
                     executed_steps.append(
                         PlanStep(
                             step=len(executed_steps) + 1,
@@ -1157,19 +1386,21 @@ for entry in sorted(selected.iterdir()):
                         )
                     )
                     continue
-                print(f"⬇️ Installing {install_target} (this may take a moment)...")
-            
+                tracker = self._create_download_tracker(cmd, install_target)
+                self.progress_indicator.start(f"Installing {install_target}...", tracker=tracker)
+
             result = self.execute_command(cmd, working_dir)
-            
+
             if install_target and start_time:
                 duration = time.time() - start_time
-                status = "✅" if result.success else "⚠️"
-                print(f"{status} Installation step for {install_target} finished in {duration:.1f}s")
+                status = "completed" if result.success else "failed"
+                self.progress_indicator.stop(f"Installation step for {install_target} {status}")
+                print(f"Installation step for {install_target} finished in {duration:.1f}s")
 
             if result.output:
                 print(result.output)
             if result.error:
-                print(f"⚠️  {result.error}")
+                print(f"Warning: {result.error}")
 
             if result.success:
                 executed_steps.append(
@@ -1181,7 +1412,7 @@ for entry in sorted(selected.iterdir()):
                 )
                 continue
 
-            print(f"❌ Command failed: {cmd}")
+            print(f"Command failed: {cmd}")
 
             # Try heuristic recovery first
             if self._attempt_intelligent_recovery(cmd, result.error, user_input):
@@ -1204,7 +1435,7 @@ for entry in sorted(selected.iterdir()):
             ):
                 continue
 
-            print("❌ Manual intervention required. Aborting remaining steps.")
+            print("Manual intervention required. Aborting remaining steps.")
             return False
 
         return True
@@ -1224,42 +1455,103 @@ for entry in sorted(selected.iterdir()):
             if match:
                 return match.group(1)
         return None
-    
+
+    def _create_download_tracker(self, command: str, target: str) -> Optional[DownloadTracker]:
+        """Create download tracker for known package managers."""
+        tracker: Optional[DownloadTracker] = None
+
+        if command.strip().startswith("brew install"):
+            try:
+                info = subprocess.run(
+                    ["brew", "info", "--json=v2", target],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                url = None
+                is_cask = False
+                if info.returncode == 0 and info.stdout:
+                    data = json.loads(info.stdout)
+                    if data.get("casks"):
+                        cask = data["casks"][0]
+                        url = cask.get("url")
+                        is_cask = True
+                    elif data.get("formulae"):
+                        formula = data["formulae"][0]
+                        url = formula.get("urls", {}).get("stable", {}).get("url")
+
+                cache_cmd = ["brew", "--cache"]
+                if is_cask:
+                    cache_cmd.append("--cask")
+                cache_cmd.append(target)
+                cache_run = subprocess.run(
+                    cache_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                cache_path = None
+                if cache_run.returncode == 0 and cache_run.stdout:
+                    potential_path = Path(cache_run.stdout.strip())
+                    cache_path = potential_path if potential_path.exists() else None
+
+                file_name = None
+                if url:
+                    parsed = urlparse(url)
+                    file_name = Path(parsed.path).name or None
+                elif cache_path:
+                    file_name = cache_path.name
+
+                total_bytes = None
+                if url:
+                    try:
+                        response = requests.head(url, allow_redirects=True, timeout=5)
+                        content_length = response.headers.get("Content-Length")
+                        if content_length and content_length.isdigit():
+                            total_bytes = int(content_length)
+                    except Exception:
+                        pass
+                tracker = BrewDownloadTracker(cache_path, file_name, total_bytes)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Unable to build brew tracker for {target}: {exc}")
+
+        if not tracker:
+            tracker = NetworkUsageTracker()
+
+        return tracker
+
     def _attempt_intelligent_recovery(self, failed_command: str, error_output: str, original_request: str) -> bool:
         """Attempt intelligent recovery by analyzing the error and finding alternatives"""
-        print("🔄 Analyzing error and attempting recovery...")
-        
+        print("Analyzing error and attempting recovery...")
         # Analyze the error and suggest alternatives
         alternatives = self._analyze_error_and_suggest_alternatives(failed_command, error_output, original_request)
-        
         if not alternatives:
-            print("❌ No recovery options found")
+            print("No recovery options found")
             return False
-        
-        print("💡 Found alternative solutions:")
+
+        print("Found alternative solutions:")
         for i, alt in enumerate(alternatives, 1):
             print(f"  {i}. {alt['description']}")
-        
+
         # Try alternatives automatically
         for alt in alternatives:
-            print(f"🔧 Trying: {alt['command']}")
+            print(f"Trying: {alt['command']}")
             result = self.execute_command(alt['command'])
-            
+
             if result.success:
                 if result.output:
                     print(result.output)
-                print("✅ Recovery successful!")
+                print("Recovery successful!")
                 return True
             else:
-                print(f"⚠️  Alternative failed: {result.error}")
-        
-        print("❌ All recovery attempts failed")
+                print(f"Warning: Alternative failed: {result.error}")
+
+        print("All recovery attempts failed")
         return False
     
     def _analyze_error_and_suggest_alternatives(self, failed_command: str, error_output: str, original_request: str) -> List[Dict[str, str]]:
         """Analyze error and suggest alternative commands"""
         alternatives = []
-        
         # Handle top command memory sorting issues
         if "top" in failed_command and "invalid argument" in error_output and "mem" in failed_command.lower():
             alternatives.extend([
