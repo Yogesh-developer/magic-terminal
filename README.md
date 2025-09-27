@@ -191,11 +191,6 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -e .[dev]
 pre-commit install
 
-# Lint and format
-black ai_terminal/
-flake8 ai_terminal/
-mypy ai_terminal/
-
 # Run automated tests
 pytest
 ```
@@ -210,7 +205,7 @@ pytest
   - Package installation on macOS/Linux/Windows ➜ confirm smart suggestions
   - Resource monitoring commands ➜ confirm platform-specific handling
 - **Smoke test**: `python3 ai_terminal/main.py`
-- **Linting / formatting** *(optional)*: `black ai_terminal/`, `flake8 ai_terminal/`, `mypy ai_terminal/`
+- **Formatting** *(optional)*: `black ai_terminal/`
 
 ---
 

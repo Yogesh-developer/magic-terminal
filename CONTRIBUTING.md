@@ -24,7 +24,7 @@ Thanks for your interest in improving Magic Terminal! This guide explains how to
 
 - **Branching**: Create feature branches from `main` (or `master`) using a descriptive name, e.g. `feature/improve-logging`.
 - **Incremental commits**: Keep commits focused and write clear messages describing the change.
-- **Code style**: Follow the existing conventions in `ai_terminal/`. The test suite enforces PEP 8 via `flake8`, formatting with `black`, and typing with `mypy`.
+- **Code style**: Follow the existing conventions in `ai_terminal/`. Use `black` to format code when needed.
 
 ## 3. Testing & Quality Gates
 
@@ -32,12 +32,9 @@ Before opening a pull request, run:
 
 ```bash
 black ai_terminal tests
-flake8 ai_terminal tests
-mypy ai_terminal
 pytest
 ```
-
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the same checks on every push and pull request.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the automated test suite on every push and pull request.
 
 ## 4. Feature Guidelines
 

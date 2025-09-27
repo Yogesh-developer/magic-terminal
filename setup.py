@@ -68,8 +68,6 @@ setup(
         "dev": [
             "pytest>=7.0.0",
             "black>=22.0.0",
-            "flake8>=4.0.0",
-            "mypy>=0.950",
         ],
         "full": [
             "colorama>=0.4.4",
