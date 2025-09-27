@@ -535,7 +535,7 @@ class EnhancedAITerminal:
     
     def __init__(self, *, enable_fallback: bool = True):
         self.system_os = platform.system().lower()
-        self.shell_prompt = "AI-Terminal> "
+        self.shell_prompt = "Magic-Terminal> "
         self.current_dir = os.getcwd()
         self.allow_fallback = enable_fallback
         
