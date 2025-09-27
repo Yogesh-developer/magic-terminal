@@ -19,26 +19,6 @@ Magic Terminal is a cross-platform, AI-assisted command-line copilot that conver
 
 ---
 
-## 🧠 Architecture Overview
-
-```
-┌──────────────┐      ┌────────────────────────────┐      ┌─────────────────────┐
-│ CLI / Prompt │ ───▶ │ Intent Understanding        │ ───▶ │ Execution & Recovery │
-└──────────────┘      │ (LLM orchestration + rules) │      └─────────────────────┘
-                      └────────────▲────────────────┘                │
-                                   │                                 │
-                     ┌─────────────┴────────────┐        ┌───────────▼────────┐
-                     │ AI Backends               │        │ Persistent Services │
-                     │ • OpenAI API              │        │ • History            │
-                     │ • Grok / X.AI             │        │ • Configuration      │
-                     │ • Ollama (local models)   │        │ • Recovery cache     │
-                     │ • Heuristic fallback      │        └─────────────────────┘
-                     └───────────────────────────┘
-```
-
-Core components live in `ai_terminal/core.py` while CLI bootstrapping is provided by `ai_terminal/main.py`.
-
----
 
 ## ⚡ Quick Start
 
@@ -224,12 +204,13 @@ pytest
 
 ## ✅ Testing Checklist
 
-- **Unit tests**: `pytest`
+- **Automated tests**: `pytest` (covers config migrations, HTTP retry logic, and safety auditing)
 - **Manual scenarios**:
   - Offline mode (no API keys, Ollama down) ➜ verify heuristic fallback
   - Package installation on macOS/Linux/Windows ➜ confirm smart suggestions
   - Resource monitoring commands ➜ confirm platform-specific handling
 - **Smoke test**: `python3 ai_terminal/main.py`
+- **Linting / formatting** *(optional)*: `black ai_terminal/`, `flake8 ai_terminal/`, `mypy ai_terminal/`
 
 ---
 

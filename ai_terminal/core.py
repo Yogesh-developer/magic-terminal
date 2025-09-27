@@ -13,7 +13,6 @@ import logging
 import requests
 import re
 import shlex
-import atexit
 import time
 import itertools
 import psutil
@@ -28,19 +27,22 @@ from urllib.parse import urlparse
 
 try:
     from .llm_client import LLMClient, PlanStep
+    from .config_manager import ConfigManager
+    from .history_manager import HistoryManager
+    from .http_utils import request_with_retries
+    from .safety import CommandAuditor, CommandWarning
 except ImportError:  # When executed as a script
     from llm_client import LLMClient, PlanStep
+    from config_manager import ConfigManager
+    from history_manager import HistoryManager
+    from http_utils import request_with_retries
+    from safety import CommandAuditor, CommandWarning
 
 try:
     from jsonschema import validate, ValidationError
 except ImportError:
     validate = None
     ValidationError = None
-
-try:
-    import readline
-except ImportError:
-    readline = None
 
 # Configuration
 LOG_FILE = os.path.expanduser("~/.ai_terminal_logs/enhanced_terminal.log")
@@ -99,32 +101,40 @@ class PackageManager:
                 'npm': {'install': 'npm install -g {}', 'uninstall': 'npm uninstall -g {}', 'update': 'npm update -g {}'}
             },
             'windows': {
-                'choco': {'install': 'choco install {} -y', 'uninstall': 'choco uninstall {}', 'update': 'choco upgrade all'},
                 'winget': {'install': 'winget install {}', 'uninstall': 'winget uninstall {}', 'update': 'winget upgrade --all'},
                 'pip': {'install': 'pip install {}', 'uninstall': 'pip uninstall {}', 'update': 'pip install --upgrade {}'}
             }
         }
         self.available_managers = self._detect_available_managers()
-    
+
     def _detect_available_managers(self) -> List[str]:
         """Detect which package managers are available"""
         available = []
         for manager in self.managers.get(self.system_os, {}):
+            if shutil.which(manager):
+                available.append(manager)
+                continue
+
             try:
-                result = subprocess.run([manager, '--version'], 
-                                      capture_output=True, timeout=5)
+                result = subprocess.run(
+                    [manager, '--version'],
+                    capture_output=True,
+                    timeout=5,
+                    check=True,
+                )
                 if result.returncode == 0:
                     available.append(manager)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
+            except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, subprocess.CalledProcessError):
                 continue
         return available
     
     def suggest_install_command(self, package: str) -> List[str]:
         """Suggest installation commands for a package"""
-        commands = []
+        commands: List[str] = []
         for manager in self.available_managers:
-            if manager in self.managers.get(self.system_os, {}):
-                cmd_template = self.managers[self.system_os][manager]['install']
+            manager_map = self.managers.get(self.system_os, {})
+            if manager in manager_map:
+                cmd_template = manager_map[manager]['install']
                 commands.append(cmd_template.format(package))
         return commands
 
@@ -539,6 +549,12 @@ class EnhancedAITerminal:
         self.current_dir = os.getcwd()
         self.allow_fallback = enable_fallback
         
+        # Configuration & state managers
+        self.config_manager = ConfigManager(Path(CONFIG_FILE))
+        self.config = self.config_manager.load()
+        self.history_manager = HistoryManager(Path(HISTORY_FILE), max_length=self.config.get('max_history', 1000))
+        self.history_manager.load()
+
         # Initialize components
         self.package_manager = PackageManager(self.system_os)
         self.file_ops = FileOperations()
@@ -546,14 +562,13 @@ class EnhancedAITerminal:
         self.system_monitor = SystemMonitor()
         self.progress_indicator = ProgressIndicator()
         self.llm_client = self._init_llm_client()
-        
-        # Configuration
-        self.config = self._load_config()
-        
+        self.command_auditor = CommandAuditor()
+
         # LLM settings
         self.ollama_url = "http://localhost:11434"
         self.grok_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self._ollama_cache: Optional[Tuple[float, List[str]]] = None
         self.available_models = self._check_ollama()
         
         # State management
@@ -562,76 +577,54 @@ class EnhancedAITerminal:
         self._bookmarks: Dict[str, str] = self.config.get('bookmarks', {})
         
         # Setup
-        self._setup_history()
         self._setup_logging()
-        
+
         logger.info("Enhanced AI Terminal initialized")
         logger.info(f"OS: {platform.system()} | Directory: {self.current_dir}")
         logger.info(f"Available package managers: {self.package_manager.available_managers}")
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file"""
-        default_config = {
-            'auto_confirm_safe': False,
-            'use_trash': True,
-            'max_history': 1000,
-            'bookmarks': {},
-            'aliases': {},
-            'preferred_package_manager': None
-        }
-        
+
+    def _log_command_event(self, event: str, **data: Any) -> None:
+        """Log structured command events as JSON."""
+        payload = {"event": event, **data}
         try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    default_config.update(config)
-        except Exception as e:
-            logger.warning(f"Failed to load config: {e}")
-        
-        return default_config
+            logger.info(json.dumps(payload))
+        except TypeError:
+            safe_payload = {key: str(value) for key, value in payload.items()}
+            logger.info(json.dumps(safe_payload))
+
     
     def _save_config(self):
         """Save configuration to file"""
         try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(self.config, f, indent=2)
+            self.config_manager.save(self.config)
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
     
-    def _check_ollama(self) -> List[str]:
-        """Check available Ollama models"""
+    def _check_ollama(self, *, cache_ttl: float = 60.0) -> List[str]:
+        """Check available Ollama models with basic caching and retry logic."""
+
+        now = time.time()
+        if self._ollama_cache and now - self._ollama_cache[0] < cache_ttl:
+            return list(self._ollama_cache[1])
+
+        models: List[str] = []
         try:
-            response = requests.get(f"{self.ollama_url}/api/tags", timeout=3)
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                return [model['name'] for model in models]
-        except Exception:
-            pass
-        return []
-    
-    def _setup_history(self):
-        """Setup command history"""
-        if not readline:
-            return
-        
-        try:
-            if os.path.exists(HISTORY_FILE):
-                readline.read_history_file(HISTORY_FILE)
-            readline.set_history_length(self.config.get('max_history', 1000))
-        except Exception as e:
-            logger.warning(f"Failed to setup history: {e}")
-        
-        atexit.register(self._save_history)
-    
-    def _save_history(self):
-        """Save command history"""
-        if not readline:
-            return
-        
-        try:
-            readline.write_history_file(HISTORY_FILE)
-        except Exception as e:
-            logger.error(f"Failed to save history: {e}")
+            response = request_with_retries(
+                "GET",
+                f"{self.ollama_url}/api/tags",
+                timeout=3,
+                retries=2,
+                backoff_factor=0.4,
+                logger=logger,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            models = [model['name'] for model in payload.get('models', [])]
+        except requests.RequestException as exc:
+            logger.debug("Ollama availability check failed: %s", exc)
+
+        self._ollama_cache = (now, models)
+        return list(models)
     
     def _setup_logging(self):
         """Setup enhanced logging"""
@@ -641,7 +634,9 @@ class EnhancedAITerminal:
         """Execute a shell command with enhanced error handling"""
         start_time = time.time()
         work_dir = working_dir or self.current_dir
-        
+
+        self._log_command_event("command_start", command=command, cwd=work_dir)
+
         try:
             result = subprocess.run(
                 command,
@@ -649,36 +644,59 @@ class EnhancedAITerminal:
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                timeout=300,  # 5 minute timeout
             )
-            
+
             duration = time.time() - start_time
             cmd_result = CommandResult(
                 success=result.returncode == 0,
                 output=result.stdout,
                 error=result.stderr,
                 duration=duration,
-                command=command
+                command=command,
             )
-            
+
             self._command_history.append(cmd_result)
+            self._log_command_event(
+                "command_finish",
+                command=command,
+                cwd=work_dir,
+                success=cmd_result.success,
+                exit_code=result.returncode,
+                duration=cmd_result.duration,
+            )
             return cmd_result
-            
+
         except subprocess.TimeoutExpired:
+            duration = time.time() - start_time
+            self._log_command_event(
+                "command_timeout",
+                command=command,
+                cwd=work_dir,
+                duration=duration,
+            )
             return CommandResult(
                 success=False,
                 output="",
                 error="Command timed out after 5 minutes",
-                duration=time.time() - start_time,
-                command=command
+                duration=duration,
+                command=command,
             )
         except Exception as e:
+            duration = time.time() - start_time
+            self._log_command_event(
+                "command_error",
+                command=command,
+                cwd=work_dir,
+                error=str(e),
+                duration=duration,
+            )
             return CommandResult(
                 success=False,
                 output="",
                 error=str(e),
-                duration=time.time() - start_time,
-                command=command
+                duration=duration,
+                command=command,
             )
     
     def run(self):
@@ -694,8 +712,7 @@ class EnhancedAITerminal:
                 if not user_input:
                     continue
                 
-                if readline and user_input:
-                    readline.add_history(user_input)
+                self.history_manager.add_entry(user_input)
                 
                 if user_input.lower() in ['exit', 'quit']:
                     print("Goodbye!")
@@ -721,36 +738,41 @@ class EnhancedAITerminal:
 Enhanced AI Terminal Commands:
 
 Package Management:
-  install <package>     - Install software package
-  uninstall <package>   - Remove software package
-  update                - Update all packages
+  install <package>      - Install software package
+  uninstall <package>    - Remove software package
+  update                 - Update all packages using your preferred manager
 
 File Operations:
-  create <type> <name>  - Create file from template
-  delete <path>         - Safely delete files/folders
-  mkdir <path>          - Create directories
+  create <type> <name>   - Create file from template library
+  delete <path>          - Safely delete files/folders with trash support
+  mkdir <path>           - Create directories
   
 Process Management:
-  ps [filter]           - List running processes
-  kill <pid/name>       - Terminate process
-  services              - List running services
+  ps [filter]            - List running processes
+  kill <pid/name>        - Terminate process (with confirmation)
+  services               - List running services
 
 System Monitoring:
-  status                - System resource usage
-  monitor               - Real-time monitoring
-  logs <file>           - Analyze log files
+  status                 - Show system resource usage snapshot
+  monitor                - Start real-time monitoring session
+  logs <file>            - Analyze log files for common issues
 
-Navigation:
-  cd <path>             - Change directory
-  bookmark <name>       - Bookmark current directory
-  goto <bookmark>       - Go to bookmarked directory
+Navigation & Bookmarks:
+  cd <path>              - Change directory
+  bookmark <name>        - Bookmark current directory
+  goto <bookmark>        - Jump to bookmarked directory
 
-Configuration:
-  config                - Show configuration
-  alias <name> <cmd>    - Create command alias
+Configuration & History:
+  config                 - Show resolved configuration
+  alias <name> <cmd>     - Create command alias
+  history search <term>  - Recall prior commands (readline required)
+
+Safety & Confirmation:
+  Commands are audited for destructive patterns.
+  Use `config` to enable `auto_confirm_safe`; high-risk commands still prompt.
 
 Natural Language:
-  Just describe what you want to do in plain English!
+  Describe goals in plain English!
   Examples:
   - "install python and create a new project"
   - "show me running processes using too much memory"
@@ -841,7 +863,15 @@ Natural Language:
         logger.info(f"Ollama analyzing: '{user_input}'")
         print(f"Analyzing: '{user_input}'")
         
-        response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=45)
+        response = request_with_retries(
+            "POST",
+            f"{self.ollama_url}/api/chat",
+            json=payload,
+            timeout=45,
+            retries=2,
+            backoff_factor=0.5,
+            logger=logger,
+        )
         if not response.ok:
             logger.error(f"Ollama API error: {response.status_code} - {response.text}")
             raise Exception(f"Ollama API error: {response.status_code}")
