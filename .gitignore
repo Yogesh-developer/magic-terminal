@@ -122,11 +122,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# AI Terminal specific
-.ai_terminal_logs/
-.ai_terminal_history
-.ai_terminal_config.json
-.ai_terminal_user_listing.py
+# Magic Terminal specific
+.magic_terminal_logs/
+.magic_terminal_history
+.magic_terminal_config.json
+.magic_terminal_user_listing.py
 
 # IDE files
 .vscode/

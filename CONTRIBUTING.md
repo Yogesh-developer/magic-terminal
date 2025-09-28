@@ -39,7 +39,7 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the automated test
 ## 4. Feature Guidelines
 
 - **Safety first**: The CLI audits high-risk commands in `ai_terminal/safety.py`. Ensure new features respect the safety model and add tests when you introduce new heuristics.
-- **Configuration**: Persisted settings live in `~/.ai_terminal_config.json`, managed through `ConfigManager`. Update `DEFAULT_CONFIG` and `CONFIG_SCHEMA` when adding new fields.
+- **Configuration**: Persisted settings live in `~/.magic_terminal_config.json`, managed through `ConfigManager`. Update `DEFAULT_CONFIG` and `CONFIG_SCHEMA` when adding new fields.
 - **Documentation**: Update `README.md` and any relevant docs to explain new features or changes in workflow. Include usage examples when possible.
 
 ## 5. Submitting a Pull Request

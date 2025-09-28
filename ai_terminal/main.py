@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for AI Terminal
+Main entry point for Magic Terminal
 """
 
 import sys
@@ -17,24 +17,24 @@ from core import EnhancedAITerminal
 def create_parser():
     """Create command line argument parser"""
     parser = argparse.ArgumentParser(
-        prog="ai-terminal",
+        prog="magic-terminal",
         description="AI-powered terminal assistant with natural language processing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ai-terminal                    # Start interactive mode
-  ai-terminal --version          # Show version
-  ai-terminal --config           # Show configuration
-  ai-terminal --setup            # Run initial setup
+  magic-terminal                    # Start interactive mode
+  magic-terminal --version          # Show version
+  magic-terminal --config           # Show configuration
+  magic-terminal --setup            # Run initial setup
 
-For more information, visit: https://github.com/yourusername/ai-terminal
+For more information, visit: https://github.com/yourusername/magic-terminal
         """
     )
     
     parser.add_argument(
         "--version", 
         action="version", 
-        version="AI Terminal v1.0.0"
+        version="Magic Terminal v1.0.0"
     )
     
     parser.add_argument(
@@ -72,11 +72,11 @@ For more information, visit: https://github.com/yourusername/ai-terminal
 
 def show_config():
     """Show current configuration"""
-    config_file = Path.home() / ".ai_terminal_config.json"
-    log_file = Path.home() / ".ai_terminal_logs" / "enhanced_terminal.log"
-    history_file = Path.home() / ".ai_terminal_history"
+    config_file = Path.home() / ".magic_terminal_config.json"
+    log_file = Path.home() / ".magic_terminal_logs" / "enhanced_terminal.log"
+    history_file = Path.home() / ".magic_terminal_history"
     
-    print("🔧 AI Terminal Configuration")
+    print("Magic Terminal Configuration")
     print("=" * 40)
     print(f"Config file: {config_file}")
     print(f"Log file: {log_file}")
@@ -88,7 +88,7 @@ def show_config():
 
 def run_setup():
     """Run initial setup wizard"""
-    print("🚀 AI Terminal Setup Wizard")
+    print("Magic Terminal Setup Wizard")
     print("=" * 40)
     
     # Check Ollama
@@ -98,13 +98,13 @@ def run_setup():
         response = requests.get("http://localhost:11434/api/tags", timeout=3)
         if response.status_code == 200:
             models = response.json().get('models', [])
-            print(f"✅ Ollama is running with {len(models)} models")
+            print(f"Ollama is running with {len(models)} models")
             for model in models[:3]:  # Show first 3 models
                 print(f"   - {model['name']}")
         else:
-            print("⚠️  Ollama is running but returned an error")
+            print("Ollama is running but returned an error")
     except Exception:
-        print("❌ Ollama is not running or not installed")
+        print("Ollama is not running or not installed")
         print("   Install Ollama from: https://ollama.ai")
     
     # Check API keys
@@ -113,14 +113,14 @@ def run_setup():
     
     if os.getenv('OPENAI_API_KEY'):
         api_keys_found.append("OpenAI")
-        print("✅ OpenAI API key is configured")
+        print("OpenAI API key is configured")
     
     if os.getenv('XAI_API_KEY') or os.getenv('GROK_API_KEY'):
         api_keys_found.append("Grok")
-        print("✅ Grok API key is configured")
+        print("Grok API key is configured")
     
     if not api_keys_found:
-        print("⚠️  No API keys found")
+        print("No API keys found")
         print("   Available options:")
         print("   - Set OPENAI_API_KEY for OpenAI GPT")
         print("   - Set XAI_API_KEY for Grok")
@@ -131,12 +131,12 @@ def run_setup():
     try:
         import psutil
         import jsonschema
-        print("✅ All dependencies are installed")
+        print("All dependencies are installed")
     except ImportError as e:
-        print(f"❌ Missing dependency: {e}")
+        print(f"Missing dependency: {e}")
         print("   Run: pip install -r requirements.txt")
     
-    print("\n🎉 Setup complete! Run 'ai-terminal' to start.")
+    print("\nSetup complete! Run 'magic-terminal' to start.")
 
 
 def main():
@@ -169,9 +169,9 @@ def main():
         terminal = EnhancedAITerminal(enable_fallback=args.enable_fallback)
         terminal.run()
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        print("\nGoodbye!")
     except Exception as e:
-        print(f"💥 Error starting AI Terminal: {e}")
+        print(f"Error starting Magic Terminal: {e}")
         if args.debug:
             import traceback
             traceback.print_exc()

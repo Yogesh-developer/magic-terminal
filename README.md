@@ -50,6 +50,10 @@ Aliases `magic` and `mt` are also installed for convenience.
 
 ## 📦 Installation Methods
 
+- **PyPI install (users)**
+  ```bash
+  pip install magic-terminal-cli
+  ```
 - **Editable install (development)**
   ```bash
   pip3 install -e .
@@ -155,13 +159,13 @@ When a command fails, Magic Terminal:
 3. Executes alternatives automatically until a success or all options are exhausted.
 4. Falls back to heuristic commands if the LLM backend is unavailable.
 
-Recovery activity is logged to `~/.ai_terminal_logs/enhanced_terminal.log` for auditing.
+Recovery activity is logged to `~/.magic_terminal_logs/enhanced_terminal.log` for auditing.
 
 ---
 
 ## ⚙️ Configuration & Persistence
 
-- **Configuration file**: `~/.ai_terminal_config.json`
+- **Configuration file**: `~/.magic_terminal_config.json`
   ```json
   {
     "auto_confirm_safe": false,
@@ -172,8 +176,8 @@ Recovery activity is logged to `~/.ai_terminal_logs/enhanced_terminal.log` for a
     "preferred_package_manager": null
   }
   ```
-- **Command history**: `~/.ai_terminal_history`
-- **Logs**: `~/.ai_terminal_logs/`
+- **Command history**: `~/.magic_terminal_history`
+- **Logs**: `~/.magic_terminal_logs/`
 
 Bookmarks, aliases, and preferences can be updated interactively or by editing the config file.
 
@@ -235,14 +239,14 @@ pytest
 
 - **How do I uninstall?**
   ```bash
-  pip3 uninstall magic-terminal
+  pip3 uninstall magic-terminal-cli
   ```
 
 ---
 
 ## 🙌 Acknowledgements
 
-- [Ollama](https://ollama.ai) for enabling offline LLM usage.
+{{ ... }}
 - [OpenAI](https://platform.openai.com/) and [Grok](https://x.ai) for compatible API backends.
 - [Rich](https://github.com/Textualize/rich) for terminal rendering utilities.
 - [psutil](https://github.com/giampaolo/psutil) for system metrics collection.

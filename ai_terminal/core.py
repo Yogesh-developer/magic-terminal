@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced AI Terminal - A comprehensive, robust terminal assistant
+Magic Terminal - A comprehensive, robust terminal assistant
 Handles all human terminal activities: installation, deletion, creation, updates, etc.
 """
 
@@ -45,14 +45,14 @@ except ImportError:
     ValidationError = None
 
 # Configuration
-LOG_FILE = os.path.expanduser("~/.ai_terminal_logs/enhanced_terminal.log")
-HISTORY_FILE = os.path.expanduser("~/.ai_terminal_history")
-CONFIG_FILE = os.path.expanduser("~/.ai_terminal_config.json")
+LOG_FILE = os.path.expanduser("~/.magic_terminal_logs/enhanced_terminal.log")
+HISTORY_FILE = os.path.expanduser("~/.magic_terminal_history")
+CONFIG_FILE = os.path.expanduser("~/.magic_terminal_config.json")
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 # Logging setup
-logger = logging.getLogger("enhanced_ai_terminal")
+logger = logging.getLogger("magic_terminal")
 if not logger.handlers:
     logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(LOG_FILE)
@@ -541,7 +541,7 @@ class NetworkUsageTracker(DownloadTracker):
 
 
 class EnhancedAITerminal:
-    """Enhanced AI Terminal with comprehensive functionality"""
+    """Magic Terminal with comprehensive functionality"""
     
     def __init__(self, *, enable_fallback: bool = True):
         self.system_os = platform.system().lower()
@@ -579,7 +579,7 @@ class EnhancedAITerminal:
         # Setup
         self._setup_logging()
 
-        logger.info("Enhanced AI Terminal initialized")
+        logger.info("Magic Terminal initialized")
         logger.info(f"OS: {platform.system()} | Directory: {self.current_dir}")
         logger.info(f"Available package managers: {self.package_manager.available_managers}")
 
@@ -701,7 +701,7 @@ class EnhancedAITerminal:
     
     def run(self):
         """Main terminal loop"""
-        print("Enhanced AI Terminal")
+        print("Magic Terminal")
         print("Type 'help' for commands, 'exit' to quit")
         print("Advanced operations: install, delete, create, monitor, etc.")
         
@@ -735,7 +735,7 @@ class EnhancedAITerminal:
     def _show_help(self):
         """Show help information"""
         help_text = """
-Enhanced AI Terminal Commands:
+Magic Terminal Commands:
 
 Package Management:
   install <package>      - Install software package
@@ -1339,7 +1339,7 @@ Convert the user's request to appropriate terminal commands."""
         users_root = Path("/Users") if self.system_os != "windows" else Path("C:/Users")
         
         # Create helper script
-        helper_script = Path.home() / ".ai_terminal_user_listing.py"
+        helper_script = Path.home() / ".magic_terminal_user_listing.py"
         helper_script.write_text(f'''
 import sys
 from pathlib import Path
@@ -1368,7 +1368,7 @@ for entry in sorted(selected.iterdir()):
 ''')
         
         return {
-            "commands": [f"python3 ~/.ai_terminal_user_listing.py"],
+            "commands": [f"python3 ~/.magic_terminal_user_listing.py"],
             "description": f"List folders under {users_root} and display selected contents",
             "type": "file_ops",
             "working_directory": str(users_root)

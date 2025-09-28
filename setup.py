@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script for AI Terminal - A comprehensive AI-powered terminal assistant
+Setup script for Magic Terminal - A comprehensive AI-powered terminal assistant
 """
 
 from setuptools import setup, find_packages
@@ -12,7 +12,7 @@ def read_readme():
         with open("README.md", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return "AI Terminal - A comprehensive AI-powered terminal assistant"
+        return "Magic Terminal - A comprehensive AI-powered terminal assistant"
 
 # Read requirements
 def read_requirements():
@@ -27,7 +27,7 @@ def read_requirements():
         ]
 
 setup(
-    name="magic-terminal",
+    name="magic-terminal-cli",
     version="1.0.0",
     author="Magic Terminal Team",
     author_email="support@magicterminal.dev",
